@@ -27,7 +27,17 @@ TcpCerl::GetTypeId()
                                           "Bandwidth of the bottleneck link (B in l=(RTT-T)*B)",
                                           DataRateValue(DataRate("2Mbps")),
                                           MakeDataRateAccessor(&TcpCerl::m_bottleneckBw),
-                                          MakeDataRateChecker());
+                                          MakeDataRateChecker())
+                            .AddAttribute("A",
+                                          "CERL additive-increase scaling parameter",
+                                          DoubleValue(0.55),
+                                          MakeDoubleAccessor(&TcpCerl::A),
+                                          MakeDoubleChecker<double>(0.0, 1.0))
+                            .AddAttribute("Modifications",
+                                          "Enable modified CERL behavior (adaptive A + sliding RTT/L windows)",
+                                          BooleanValue(true),
+                                          MakeBooleanAccessor(&TcpCerl::m_modifications),
+                                          MakeBooleanChecker());
     return tid;
 }
 
@@ -44,7 +54,8 @@ TcpCerl::TcpCerl()
       m_beta(6),
       m_maxQueueLen(0),
       A(0.55),
-      m_bottleneckBw(DataRate("2Mbps"))
+    m_bottleneckBw(DataRate("2Mbps")),
+    m_modifications(true)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -62,7 +73,8 @@ TcpCerl::TcpCerl(const TcpCerl& sock)
       m_beta(sock.m_beta),
       m_maxQueueLen(sock.m_maxQueueLen), // l_max
       A(sock.A),
-      m_bottleneckBw(sock.m_bottleneckBw)
+    m_bottleneckBw(sock.m_bottleneckBw),
+    m_modifications(sock.m_modifications)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -154,17 +166,22 @@ TcpCerl::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcked, const Time& 
 
     std::cout << "Non Updated m_minRtt= " << m_minRtt << std::endl;
 
-    EnqueueRttSample(rtt);
-
-    // print the entire queue of rtt samples
-    std::cout << "Current RTT samples in the queue: ";
-    for (const auto& sample : m_rttSamples)
+    if (m_modifications)
     {
-        std::cout << sample << " ";
-    }
-    std::cout << std::endl;
+        EnqueueRttSample(rtt);
 
-    // m_minRtt = std::min(m_minRtt, rtt);
+        std::cout << "Current RTT samples in the queue: ";
+        for (const auto& sample : m_rttSamples)
+        {
+            std::cout << sample << " ";
+        }
+        std::cout << std::endl;
+    }
+    else
+    {
+        m_minRtt = std::min(m_minRtt, rtt);
+    }
+
     std::cout << "Updated m_minRtt= " << m_minRtt << std::endl;
 
     // Bottleneck bandwidth B in bytes/sec
@@ -175,11 +192,19 @@ TcpCerl::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcked, const Time& 
     // m_recovery->setL((rtt - m_minRtt).GetSeconds() * bw);
     tcb->m_cerlL = (rtt - m_minRtt).GetSeconds() * bw;
 
-    // Track max queue length over last 20 L samples
-    EnqueueLSample(tcb, tcb->m_cerlL);
-
-    // update N
-    tcb->m_cerlN = A * tcb->m_cerlLmax;
+    if (m_modifications)
+    {
+        EnqueueLSample(tcb, tcb->m_cerlL);
+        tcb->m_cerlN = A * tcb->m_cerlLmax;
+    }
+    else
+    {
+        if (tcb->m_cerlL > tcb->m_cerlLmax)
+        {
+            tcb->m_cerlLmax = tcb->m_cerlL;
+        }
+        tcb->m_cerlN = A * tcb->m_cerlLmax;
+    }
 
     // std::cout << "wow!!" << A * tcb->m_cerlLmax << std::endl;
     // print minRTT, L, Lmax, N:
@@ -192,15 +217,23 @@ TcpCerl::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcked, const Time& 
     NS_LOG_DEBUG("Updated m_baseRtt= " << m_baseRtt);
 
     // Update RTT counter
-    // m_cntRtt++;
-    m_cntRtt = m_rttSamples.size();
+    if (m_modifications)
+    {
+        m_cntRtt = m_rttSamples.size();
+    }
+    else
+    {
+        m_cntRtt++;
+    }
     NS_LOG_DEBUG("Updated m_cntRtt= " << m_cntRtt);
     std::cout << "Updated m_cntRtt= " << m_cntRtt << std::endl;
 
-    // Update A based on RTT variance
-    double rttVar = ComputeRttVariance();
-    double normalizedVar = rttVar / (m_minRtt.GetSeconds() * m_minRtt.GetSeconds() + 1e-12);
-    A = std::max(0.2, std::min(0.8, 0.55 - 0.3 * normalizedVar));
+    if (m_modifications)
+    {
+        double rttVar = ComputeRttVariance();
+        double normalizedVar = rttVar / (m_minRtt.GetSeconds() * m_minRtt.GetSeconds() + 1e-12);
+        A = std::max(0.2, std::min(0.8, 0.55 - 0.3 * normalizedVar));
+    }
 
     std::cout << "Updated A based on RTT variance: " << A << std::endl;
 }

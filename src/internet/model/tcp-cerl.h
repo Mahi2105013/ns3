@@ -122,6 +122,7 @@ class TcpCerl : public TcpNewReno
     uint32_t m_maxQueueLen; //!< Maximum queue length at the bottleneck link
     double A;              //!< Parameter for Cerl additive increase algorithm
     DataRate m_bottleneckBw; //!< Bottleneck link bandwidth (B in the CERL formula)
+    bool m_modifications; //!< If true, use adaptive A + sliding RTT/L windows; if false, use fixed/global baseline
     std::deque<Time> m_rttSamples; //!< Queue of recent RTT samples
     std::deque<double> m_lSamples; //!< Sliding window of recent m_cerlL values (max 20)
 
